@@ -11,7 +11,6 @@ static cudaError_t cu_err;
 static float t0, t1, t2;
 
 #define BUG
-#define TO_PTXx
 
 // #define CUDA_CALL(k) { \
 //   cudaError_t e = (k); \
@@ -80,7 +79,7 @@ __global__ void hello_kernel() {
     printf("Hello\n");
 }
 
-const int TILE_WIDTH = 32;
+const int TILE_WIDTH = 16;
 
 __global__ void gemm1_kernel(const float* A, const float* B, float* C, const int M, const int N, const int K) {
   __shared__ float Mds[TILE_WIDTH][TILE_WIDTH];
@@ -155,8 +154,8 @@ __device__ __forceinline__ void null_asm(int& reg) {
 /*! \brief a block compute 128 * 128 tile */
 __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int M, const int N, const int K) {
 
-  __shared__ __align__(M_TILE_SIZE * 4) float Mtile[M_TILE_SIZE * K_TILE_SIZE];
-  __shared__ __align__(N_TILE_SIZE * 4) float Ntile[K_TILE_SIZE * N_TILE_SIZE];
+  __shared__ __align__(M_TILE_SIZE * K_TILE_SIZE * 4) float Mtile[M_TILE_SIZE * K_TILE_SIZE];
+  __shared__ __align__(N_TILE_SIZE * K_TILE_SIZE * 4) float Ntile[K_TILE_SIZE * N_TILE_SIZE];
 
   const uint32_t lane_id = threadIdx.x % 32;
   const uint32_t warp_id = threadIdx.x / 32;
@@ -174,11 +173,15 @@ __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int
 
   /*! \note A_ldg_ptr: start of M tile */
   const float* A_ldg_ptr = (const float*)(
-    A + (blockIdx.y * M_TILE_SIZE + threadIdx.x / K_TILE_SIZE * 4) * K + threadIdx.x % K_TILE_SIZE
+    //* version = 2
+    // A + (blockIdx.y * M_TILE_SIZE + threadIdx.x / K_TILE_SIZE * 4) * K + threadIdx.x % K_TILE_SIZE
+    A + (blockIdx.y * M_TILE_SIZE + threadIdx.x / 2) * K + threadIdx.x % 2 * 4
   );
   /*! \note B_ldg_ptr: start of N tile */
   const float* B_ldg_ptr = (const float*)(
-    B + (threadIdx.x / 32) * N + blockIdx.x * N_TILE_SIZE + threadIdx.x % 32
+    // B + (threadIdx.x / 32) * N + blockIdx.x * N_TILE_SIZE + lane_id
+    //* ldgsts 失败的版本 Version = 0
+    B + (threadIdx.x / 32) * N + blockIdx.x * N_TILE_SIZE + lane_id * 4
   );  
 
   float* C_stg_ptr = (C 
@@ -193,8 +196,12 @@ __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int
   /*! \note compute Mtile by Ntile by Ktile GEMM */
   for (int p = 0; p < K / K_TILE_SIZE; ++p) {
 
-    float* A_sts_ptr = Mtile + (threadIdx.x % 8) * M_TILE_SIZE + (threadIdx.x / 8) * 4;
-    float* B_sts_ptr = Ntile + (threadIdx.x / 32) * N_TILE_SIZE + (threadIdx.x % 32);
+    //* Version = 2
+    // float* A_sts_ptr = Mtile + (threadIdx.x % 8) * M_TILE_SIZE + (threadIdx.x / 8) * 4;
+    float* A_sts_ptr = Mtile + (threadIdx.x % 2) * 4 * M_TILE_SIZE + threadIdx.x / 2;
+    //* ldgsts 失败的版本 Version = 0
+    // float* B_sts_ptr = Ntile + (threadIdx.x / 32) * N_TILE_SIZE + lane_id;
+    float* B_sts_ptr = Ntile + (threadIdx.x / 32) * N_TILE_SIZE + lane_id * 4;
     
     /*! \todo Zig-zag to avoid bank conflict */
     const float* A_lds_ptr = (const float*)(Mtile
@@ -213,21 +220,47 @@ __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int
       // load A to Mtile
       /*! \todo does float4 matters*/
       float4 tmp4;
+      //TODO 看看编译器又没有死码消除
       float4* sts_tmp4_ptr = (float4*)A_sts_ptr;
-      tmp4.x = A_ldg_ptr[0];
-      tmp4.y = A_ldg_ptr[K];
-      tmp4.z = A_ldg_ptr[K * 2];
-      tmp4.w = A_ldg_ptr[K * 3];
-      sts_tmp4_ptr[0] = tmp4;
+      {
+        //* version = 2
+        // tmp4.x = A_ldg_ptr[0];
+        // tmp4.y = A_ldg_ptr[K];
+        // tmp4.z = A_ldg_ptr[K * 2];
+        // tmp4.w = A_ldg_ptr[K * 3];        
+        // sts_tmp4_ptr[0] = tmp4;
+      }
+      tmp4 = ((const float4*)A_ldg_ptr)[0];
+      A_sts_ptr[0] = tmp4.x;
+      A_sts_ptr[M_TILE_SIZE] = tmp4.y;
+      A_sts_ptr[M_TILE_SIZE * 2] = tmp4.z;
+      A_sts_ptr[M_TILE_SIZE * 3] = tmp4.w;
       // load B to Mtile
       /*! \todo does comppiler use ldgsts?
        *  No. checked PTX with .target sm_89
        */
       //TODO 可以更改访存的方法
-      B_sts_ptr[0]  = B_ldg_ptr[0];
-      B_sts_ptr[32] = B_ldg_ptr[32];
-      B_sts_ptr[64] = B_ldg_ptr[64];
-      B_sts_ptr[96] = B_ldg_ptr[96];       
+      {
+        //* ldgsts 失败的方法
+        //* version = 0
+        // B_sts_ptr[0]  = B_ldg_ptr[0];
+        // B_sts_ptr[32] = B_ldg_ptr[32];
+        // B_sts_ptr[64] = B_ldg_ptr[64];
+        // B_sts_ptr[96] = B_ldg_ptr[96];  
+        //* 这样优化确实有效果, 可能是128-Byte   
+      }
+      sts_tmp4_ptr = (float4*)B_sts_ptr;
+      {
+        //* version = 1
+        //* useful1.ncu 里的高Cache-hit rate是因为分四次读了这个cacheline
+        /*! \todo 这样做并不能触发coalescing */
+        // tmp4.x = B_ldg_ptr[0];
+        // tmp4.y = B_ldg_ptr[1];
+        // tmp4.z = B_ldg_ptr[2];
+        // tmp4.w = B_ldg_ptr[3];
+      }
+      tmp4 = ((const float4*)B_ldg_ptr)[0];
+      sts_tmp4_ptr[0] = tmp4;
       __syncthreads();
     }
 
@@ -266,16 +299,40 @@ __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int
         B_frag[1] = tmp4.y;
         B_frag[2] = tmp4.z;
         B_frag[3] = tmp4.w;
+      }
+
+      #pragma unroll
+      for (int m = 0; m < 4; ++m) {
+        #pragma unroll
+        for (int n = 0; n < 4; ++n) {
+          C_frag[m][n] += A_frag[m] * B_frag[n];
+        }
+      } 
+
+      {
+        float4 tmp4;
+        tmp4 = ((float4*)(B_lds_ptr + N_THREAD * 4))[0];
+        B_frag[4] = tmp4.x;
+        B_frag[5] = tmp4.y;
+        B_frag[6] = tmp4.z;
+        B_frag[7] = tmp4.w;        
+      }
+
+      #pragma unroll
+      for (int m = 0; m < 4; ++m) {
+        #pragma unroll
+        for (int n = 4; n < 8; ++n) {
+          C_frag[m][n] += A_frag[m] * B_frag[n];
+        }
+      } 
+
+      {
+        float4 tmp4;
         tmp4 = ((float4*)(A_lds_ptr + M_THREAD * 4))[0];
         A_frag[4] = tmp4.x;
         A_frag[5] = tmp4.y;
         A_frag[6] = tmp4.z;
         A_frag[7] = tmp4.w;
-        tmp4 = ((float4*)(B_lds_ptr + N_THREAD * 4))[0];
-        B_frag[4] = tmp4.x;
-        B_frag[5] = tmp4.y;
-        B_frag[6] = tmp4.z;
-        B_frag[7] = tmp4.w;
       }
 
       A_lds_ptr += M_TILE_SIZE;
@@ -283,7 +340,7 @@ __global__ void gemm2_kernel(const float* A, const float* B, float* C, const int
 
       // compute
       #pragma unroll
-      for (int m = 0; m < 8; ++m) {
+      for (int m = 4; m < 8; ++m) {
         #pragma unroll
         for (int n = 0; n < 8; ++n) {
           C_frag[m][n] += A_frag[m] * B_frag[n];
@@ -399,7 +456,7 @@ float* gemm1() {
   cudaMemcpy(cuA, A, M * K * sizeof(float), cudaMemcpyHostToDevice);
   cudaMemcpy(cuB, B, K * N * sizeof(float), cudaMemcpyHostToDevice);
 
-  dim3 blockDim(32, 32);
+  dim3 blockDim(TILE_WIDTH, TILE_WIDTH);
   dim3 gridDim((N + blockDim.x - 1) / blockDim.x, (M + blockDim.y - 1) / blockDim.y);
 
   cudaEvent_t begin, end;
@@ -424,14 +481,15 @@ float* gemm1() {
 }
 #endif // TO_PTX
 
-//TODO 分段测试
 float* gemm2() {
   float* A = (float*)malloc(M * K * sizeof(float));
   float* B = (float*)malloc(K * N * sizeof(float));
   float* C = (float*)malloc(M * N * sizeof(float));
 
-  fill_mat_1(A, M, K);
-  fill_mat_1(B, K, N);
+  fill_mat_rng(A, M, K);
+  fill_mat_rng(B, K, N);
+  // fill_mat_1(A, M, K);
+  // fill_mat_1(B, K, N);
 
   float *cuA, *cuB, *cuC;
   cudaMalloc((void **)&cuA, M * K * sizeof(float));
@@ -456,7 +514,7 @@ float* gemm2() {
   cudaEventElapsedTime(&t2, begin, end);
 
   if (cu_err != cudaSuccess) {
-    std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__
+    std::cerr << "CUDA error in kernel2"
               << ": " << cudaGetErrorString(cu_err) << std::endl;
   }
 
@@ -475,6 +533,7 @@ int main()
   cudaStreamCreate(&stream);
   constexpr size_t TFLOP = 2 * (size_t)M * (size_t)N * (size_t)K;
   std::cout << "start..." << std::endl;
+  #ifndef TO_PTX
   float *mat0 = gemm0();
   // check_mat(mat0, M, N, K);
   free(mat0);
@@ -487,6 +546,7 @@ int main()
   std::cout << "kernel1: " << t1 << "ms  TFLOPs: "
             << TFLOP / t1 / 1e9
             << std::endl; 
+  #endif // TO_PTX
   float* mat2 = gemm2();
   // check_mat(mat2, M, N, K);
   free(mat2);
