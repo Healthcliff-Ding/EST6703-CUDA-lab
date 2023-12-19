@@ -9,10 +9,15 @@
 
 ### 测试
 - 4090平台: 82.58 TFLOPs fp32
-    - gemm0: 136.685ms  TFLOPs: 5.0276
-    - gemm1: 112.009ms  TFLOPs: 6.13516
-    - gemm2: 22.108ms   TFLOPs: 31.0836
+    - gemm2: 62% fp32 peak performance
 - 3090平台: 35.58 TFLOPs fp32
+
+```Bash
+# 拉下来仓库以后, 修改 Makefile 中 sm89 为 sm86
+# 使用 ncu 进行性能测试
+make ncu
+# 使用 Nsight Compute 软件打开 ncu-rep 文件
+```
 
 ### 修改
 1. Version 0 => Version 1
@@ -22,7 +27,7 @@
 3. Version 2 => Version 3
     修改了 A_ldg 的方法, 提升了3%, 避免了STS的 Bank conflict
 4. Version 3 => Version 4
-    将FMA和FMA之前的 LDS 并行处理
+    将FMA和FMA之前的 LDS 交错处理
 
 ## Add Bias
 
