@@ -1,0 +1,5 @@
+*.txt
+log*
+*.ptx
+*.ncu-rep
+a.out

@@ -17,8 +17,9 @@ test: $(SRCS)
 	$(NVCC) $(NVFLAGS) -DTEST -o $@ $^
 	./$@
 ncu: $(SRCS)
-	$(NVCC) $(NVFLAGS) -o $(TARGET) $^
-	./nncu.sh $(V)
+	$(NVCC) $(NVFLAGS) $^
+	./nncu.sh $(v)
+	rm a.out
 
 clean:
-	rm -f $(TARGET)
+	rm -f $(TARGET) test 
