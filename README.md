@@ -31,7 +31,11 @@ make ncu
 
 ## Add Bias
 
+Memory bound. 80%+
+
 ## Row Reduce Sub Mean
+
+
 
 ## Kernel Fusion
 
