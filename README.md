@@ -8,10 +8,11 @@
 ## GEMM1
 
 ### 测试
-- 4090平台
+- 4090平台: 82.58 TFLOPs fp32
     - gemm0: 136.685ms  TFLOPs: 5.0276
     - gemm1: 112.009ms  TFLOPs: 6.13516
     - gemm2: 22.108ms   TFLOPs: 31.0836
+- 3090平台: 35.58 TFLOPs fp32
 
 ## Add Bias
 
