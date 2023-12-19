@@ -12,14 +12,6 @@ static float t0, t1, t2;
 
 #define BUG
 
-// #define CUDA_CALL(k) { \
-//   cudaError_t e = (k); \
-//   if (e != cudaSuccess) { \
-//     std::cerr << "CUDA error in " << __FILE__ << " at line " << __LINE__ \
-//               << ": " << cudaGetErrorString(err) << std::endl; \
-//   } \
-// }
-
 void fill_mat_rng(float* mat, const int m, const int n) {
   // size_t tmp = 0;
   std::random_device rd;
@@ -486,10 +478,13 @@ float* gemm2() {
   float* B = (float*)malloc(K * N * sizeof(float));
   float* C = (float*)malloc(M * N * sizeof(float));
 
+  #ifndef TEST
   fill_mat_rng(A, M, K);
   fill_mat_rng(B, K, N);
-  // fill_mat_1(A, M, K);
-  // fill_mat_1(B, K, N);
+  #else
+  fill_mat_1(A, M, K);
+  fill_mat_1(B, K, N);
+  #endif
 
   float *cuA, *cuB, *cuC;
   cudaMalloc((void **)&cuA, M * K * sizeof(float));
@@ -548,7 +543,9 @@ int main()
             << std::endl; 
   #endif // TO_PTX
   float* mat2 = gemm2();
-  // check_mat(mat2, M, N, K);
+  #ifdef TEST
+  check_mat(mat2, M, N, K);
+  #endif
   free(mat2);
   std::cout << "kernel2: " << t2 << "ms  TFLOPs: "
             << TFLOP / t2 / 1e9
