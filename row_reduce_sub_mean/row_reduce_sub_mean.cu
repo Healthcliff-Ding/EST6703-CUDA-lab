@@ -8,6 +8,7 @@ cudaError_t cu_err;
 cudaStream_t stream;
 
 // #define TEST
+// #define DEBUG
 
 __device__ __forceinline__ float4 operator+=(float4& a, float4 b) {
   a.x += b.x; a.y += b.y; a.z += b.z; a.w += b.w; 
@@ -34,9 +35,10 @@ void fill_mat_rng(float* mat, const int m, const int n) {
 
 #ifdef TEST
 void fill_mat_1(float* mat, const int m, const int n) {
+  int tmp = 0;
   for (int i = 0; i < m; ++i) {
     for (int j = 0; j < n; ++j) {
-      mat[i * n + j] = 0;
+      mat[i * n + j] = tmp++;
     }
   }
 }
@@ -76,7 +78,7 @@ __global__ void row_reduce_sub_mean0_kernel(const float* A, float* C) {
     partial_sum[tid] = A_reg.x;  
     
     // #pragma unroll
-    // stride = 32, 4, 0
+    // stride = 64, 8, 1
     for (int stride = blockDim.x / 8; stride >= 1; stride /= 8) {
       __syncthreads();
       if (tid < stride) {
@@ -88,12 +90,12 @@ __global__ void row_reduce_sub_mean0_kernel(const float* A, float* C) {
         partial_sum[tid] = (A_reg.x + A_reg.y + A_reg.z + A_reg.w) / 8;
       }
     }
+    #ifdef DEBUG
+    if (bid == 0 && tid == 0) printf("i=%d: res=%f\n", i, partial_sum[0]);
+    #endif    
 
     res += partial_sum[0];
     A_ldg_ptr += 4 * blockDim.x;
-    #ifdef DEBUG
-    // if (bid == 0 && tid == 0) printf("i=%d: res=%f\n", i, res);
-    #endif
   }
 
   res = res / (N / (blockDim.x * 4));
@@ -159,7 +161,8 @@ int main()
   std::cout << "start..." << std::endl;
   float *mat0 = row_reduce_sub_mean0_kernel();
   #ifdef TEST
-  check_mat1(mat0, N, N, 0);
+  // check_mat1(mat0, N, N, 0);
+  // for (int i = 0; i < 10; ++i) std::cout << mat0[i] << ", " << std::endl;
   #endif // TEST
   std::cout << "kernel0: " << t0 << "ms  TFLOPs: "
           << TFLOP / t0 / 1e9
