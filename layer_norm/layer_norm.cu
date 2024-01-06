@@ -122,9 +122,10 @@ __global__ void layer_norm0_kernel(const float* A, float* C, const int b, const 
 
   /*! \note use row reduce sum to compute mean */
   /*! \note now we have blockDim.x threads each with local sum */
-  for (int i = threadIdx.x; i < line_size / 128; i += blockDim.x) {
+  #pragma unroll
+  for (int i = threadIdx.x; i < line_size / 4; i += blockDim.x) {
     local_reg = ((const float4*)A_ldg_ptr)[i];
-    local_sum = local_reg.x + local_reg.y + local_reg.z + local_reg.w;
+    local_sum += local_reg.x + local_reg.y + local_reg.z + local_reg.w;
   }
   mean = row_reduce_sum_kernel(local_sum);
   mean = mean / line_size;
@@ -134,7 +135,8 @@ __global__ void layer_norm0_kernel(const float* A, float* C, const int b, const 
   __syncthreads();
 
   //TODO 从shared memory里弄数据进来 -> 懒得弄了
-  for (int i = threadIdx.x; i < line_size / 128; i += blockDim.x) {
+  #pragma unroll
+  for (int i = threadIdx.x; i < line_size / 4; i += blockDim.x) {
     local_reg = ((const float4*)A_ldg_ptr)[i];
     local_var += (local_reg.x - mean) * (local_reg.x - mean)
                + (local_reg.y - mean) * (local_reg.y - mean)
@@ -150,7 +152,9 @@ __global__ void layer_norm0_kernel(const float* A, float* C, const int b, const 
 
   /*! \note write back */
   float* C_ldg_ptr = C + blockIdx.x * line_size; 
-  for (int i = threadIdx.x; i < line_size / 128; i += blockDim.x) {
+  #pragma unroll
+  for (int i = threadIdx.x; i < line_size / 4; i += blockDim.x) {
+    local_reg = ((const float4*)A_ldg_ptr)[i];
     local_reg.x = (local_reg.x - mean) * variance;
     local_reg.y = (local_reg.y - mean) * variance;
     local_reg.z = (local_reg.z - mean) * variance;
